@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -17,6 +18,7 @@ void usage() {
       << "usage:\n"
       << "  hz_convert --tone HZ [--seconds 0.5] [--sps 48000] --out FILE.mid\n"
       << "  hz_convert --wav FILE.wav --out FILE.mid\n"
+      << "  detector options: [--low-hz 50] [--high-hz 2000]\n"
       << "\n"
       << "One monophonic tracker per input channel. Channel 1 is the MPE\n"
       << "manager; input N is written on MIDI channel N+1.\n";
@@ -42,7 +44,8 @@ std::vector<float> tone(float hz, float sps, float seconds, float amp = 0.5f) {
    return x;
 }
 
-// 16-bit PCM WAV, interleaved. Returns false on anything else.
+// Mono or interleaved multichannel WAV: 16-bit PCM or 32-bit IEEE float.
+// Returns false on anything else.
 bool read_wav(
    std::string const& path,
    std::vector<std::vector<float>>& channels,
@@ -82,17 +85,30 @@ bool read_wav(
       }
       i = body + size + (size & 1);
    }
-   if (format != 1 || bits != 16 || nch < 1 || nch > 8 || rate == 0 || data == 0)
+   bool pcm16 = format == 1 && bits == 16;
+   bool float32 = format == 3 && bits == 32 && sizeof(float) == 4;
+   if ((!pcm16 && !float32) || nch < 1 || nch > 8 || rate == 0 || data == 0)
       return false;
 
-   std::size_t frames = data_n / (nch * 2);
+   unsigned bytes_per_sample = bits / 8;
+   std::size_t frames = data_n / (nch * bytes_per_sample);
    channels.assign(nch, std::vector<float>(frames));
    sps = float(rate);
    for (std::size_t f = 0; f < frames; ++f) {
       for (unsigned c = 0; c < nch; ++c) {
-         std::size_t o = data + (f * nch + c) * 2;
-         int16_t s = int16_t(b[o] | (unsigned(b[o + 1]) << 8));
-         channels[c][f] = float(s) / 32768.f;
+         std::size_t o = data + (f * nch + c) * bytes_per_sample;
+         if (pcm16) {
+            int16_t s = int16_t(b[o] | (unsigned(b[o + 1]) << 8));
+            channels[c][f] = float(s) / 32768.f;
+         } else {
+            std::uint32_t raw = std::uint32_t(b[o])
+               | (std::uint32_t(b[o + 1]) << 8)
+               | (std::uint32_t(b[o + 2]) << 16)
+               | (std::uint32_t(b[o + 3]) << 24);
+            float sample = 0.f;
+            std::memcpy(&sample, &raw, sizeof(sample));
+            channels[c][f] = sample;
+         }
       }
    }
    return true;
@@ -104,6 +120,8 @@ int main(int argc, char** argv) {
    float tone_hz = 0.f;
    float seconds = 0.5f;
    float sps = 48000.f;
+   float low_hz = 50.f;
+   float high_hz = 2000.f;
    std::string wav, out;
    for (int i = 1; i < argc; ++i) {
       std::string a = argv[i];
@@ -123,6 +141,8 @@ int main(int argc, char** argv) {
       if (arg_eq(a, "--tone")) { if (!number("--tone", tone_hz)) return 2; }
       else if (arg_eq(a, "--seconds")) { if (!number("--seconds", seconds)) return 2; }
       else if (arg_eq(a, "--sps")) { if (!number("--sps", sps)) return 2; }
+      else if (arg_eq(a, "--low-hz")) { if (!number("--low-hz", low_hz)) return 2; }
+      else if (arg_eq(a, "--high-hz")) { if (!number("--high-hz", high_hz)) return 2; }
       else if (arg_eq(a, "--wav")) wav = need("--wav");
       else if (arg_eq(a, "--out")) out = need("--out");
       else if (arg_eq(a, "--help") || arg_eq(a, "-h")) { usage(); return 0; }
@@ -130,7 +150,8 @@ int main(int argc, char** argv) {
    }
    if (tone_hz < 0.f || tone_hz > 20000.f
       || seconds <= 0.f || seconds > 60.f
-      || sps < 1000.f || sps > 192000.f) {
+      || sps < 1000.f || sps > 192000.f
+      || low_hz < 20.f || high_hz > 20000.f || high_hz <= low_hz) {
       std::cerr << "numeric argument out of range\n";
       return 2;
    }
@@ -143,7 +164,7 @@ int main(int argc, char** argv) {
    std::vector<std::vector<float>> channels;
    if (!wav.empty()) {
       if (!read_wav(wav, channels, sps)) {
-         std::cerr << "could not read 16-bit PCM WAV: " << wav << "\n";
+         std::cerr << "could not read 16-bit PCM or 32-bit float WAV: " << wav << "\n";
          return 1;
       }
    } else {
@@ -152,6 +173,8 @@ int main(int argc, char** argv) {
 
    hz::Config cfg;
    cfg.sps = sps;
+   cfg.low_hz = low_hz;
+   cfg.high_hz = high_hz;
 #ifdef HZ_WITH_Q
    cfg.onset_hops = 3;
    auto estimator = hz::make_q_pitch_estimator(int(channels.size()), cfg);

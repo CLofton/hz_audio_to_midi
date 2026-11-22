@@ -25,6 +25,21 @@ def test_invalid_numeric_arguments(executable: str) -> int:
         ["--tone", "440", "--sps", "0"],
         ["--tone", "440", "--sps", "1e30"],
         ["--tone", "440", "--seconds", "60", "--sps", "192000"],
+        ["--tone", "440", "--seconds", "0.01", "--low-hz", "0.000001"],
+        ["--tone", "440", "--low-hz", "19.999"],
+        ["--tone", "440", "--low-hz", "0"],
+        ["--tone", "440", "--low-hz", "-1"],
+        ["--tone", "440", "--low-hz", "nan"],
+        ["--tone", "440", "--low-hz", "inf"],
+        ["--tone", "440", "--low-hz", "1e30"],
+        ["--tone", "440", "--high-hz", "0"],
+        ["--tone", "440", "--high-hz", "-1"],
+        ["--tone", "440", "--high-hz", "nan"],
+        ["--tone", "440", "--high-hz", "inf"],
+        ["--tone", "440", "--high-hz", "20001"],
+        ["--tone", "440", "--high-hz", "1e30"],
+        ["--tone", "440", "--low-hz", "440", "--high-hz", "440"],
+        ["--tone", "440", "--low-hz", "2000", "--high-hz", "50"],
     ]
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:

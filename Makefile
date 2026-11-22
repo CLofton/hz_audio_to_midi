@@ -14,6 +14,7 @@ q-test: $(BUILD)/test_q_converter $(BUILD)/hz_convert_q
 	./$(BUILD)/test_q_converter
 	python3 tests/test_q_cli.py ./$(BUILD)/hz_convert_q
 	python3 tests/test_q_real.py ./$(BUILD)/hz_convert_q $(Q_PATH)
+	python3 tests/test_q_multichannel.py ./$(BUILD)/hz_convert_q $(Q_PATH)
 
 $(BUILD)/test_converter: tests/test_converter.cpp src/hz/converter.hpp
 	mkdir -p $(BUILD)

@@ -6,11 +6,23 @@ import tempfile
 
 EXPECTED = {
     "1a-Low-E.wav": 40,
+    "1b-Low-E-12th.wav": 52,
+    "1c-Low-E-24th.wav": 64,
     "2a-A.wav": 45,
+    "2b-A-12th.wav": 57,
+    "2c-A-24th.wav": 69,
     "3a-D.wav": 50,
+    "3b-D-12th.wav": 62,
+    "3c-D-24th.wav": 74,
     "4a-G.wav": 55,
+    "4b-G-12th.wav": 67,
+    "4c-G-24th.wav": 79,
     "5a-B.wav": 59,
+    "5b-B-12th.wav": 71,
+    "5c-B-24th.wav": 83,
     "6a-High-E.wav": 64,
+    "6b-High-E-12th.wav": 76,
+    "6c-High-E-24th.wav": 88,
 }
 
 
@@ -69,8 +81,11 @@ def main() -> int:
         for name, expected in EXPECTED.items():
             source = audio / name
             output = pathlib.Path(tmp) / f"{name}.mid"
+            arguments = [executable, "--wav", str(source), "--out", str(output)]
+            if name == "6c-High-E-24th.wav":
+                arguments += ["--low-hz", "263.7", "--high-hz", "1648"]
             result = subprocess.run(
-                [executable, "--wav", str(source), "--out", str(output)],
+                arguments,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -85,7 +100,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
     if not failures:
-        print("all six Q open-string recordings produced exactly the expected MIDI note")
+        print("all 18 Q recordings produced exactly the expected MIDI note")
     return 1 if failures else 0
 
 

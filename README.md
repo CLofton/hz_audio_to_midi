@@ -25,7 +25,7 @@ make q-test Q_PATH=../Q
 make q-demo Q_PATH=../Q
 ```
 
-`make q-demo` writes `build/a440_q.mid`. `make q-test` also runs Q's six real open-string recordings and requires exactly E2, A2, D3, G3, B3, and E4. Pass a WAV to the Q-backed binary with `./build/hz_convert_q --wav take.wav --out take.mid`. The ordinary `make test` neither fetches nor includes Q.
+`make q-demo` writes `build/a440_q.mid`. `make q-test` runs all 18 Q recordings (open, 12th, and 24th fret) plus a six-channel divided-audio take, checking every note and MPE member channel. WAV input accepts 16-bit PCM and 32-bit IEEE float. Use `--low-hz` and `--high-hz` to set the detector range; the High E 24th-fret case uses `263.7..1648 Hz`. The ordinary `make test` neither fetches nor includes Q.
 
 ![Hz Pitch to MIDI](https://github.com/cycfi/hz_audio_to_midi/blob/master/docs/images/MIDI_Guitar-16-9.jpg?raw=true)
 
