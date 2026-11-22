@@ -368,6 +368,26 @@ inline void put_vlq(std::string& o, unsigned v) {
    }
 }
 
+inline std::vector<MidiEvent> make_mpe_setup_events(int channels, int bend_semitones) {
+   channels = std::clamp(channels, 1, 15);
+   bend_semitones = std::clamp(bend_semitones, 1, 96);
+   std::vector<MidiEvent> setup;
+   auto add = [&](int channel, int data1, int data2) {
+      setup.push_back(MidiEvent{0, channel, 0xB0, data1, data2});
+   };
+   add(0, 101, 0);
+   add(0, 100, 6);
+   add(0, 6, channels);
+   add(0, 38, 0);
+   for (int channel = 1; channel <= channels; ++channel) {
+      add(channel, 101, 0);
+      add(channel, 100, 0);
+      add(channel, 6, bend_semitones);
+      add(channel, 38, 0);
+   }
+   return setup;
+}
+
 inline bool write_midi(
    std::string const& path,
    std::vector<MidiEvent> const& events,
@@ -376,8 +396,6 @@ inline bool write_midi(
    int bend_semitones
 ) {
    if (sps <= 0.f) return false;
-   channels = std::clamp(channels, 1, 15);
-   bend_semitones = std::clamp(bend_semitones, 1, 96);
 
    struct Row { int tick; int order; int channel; int status; int d1; int d2; };
    std::vector<Row> rows;
@@ -386,16 +404,8 @@ inline bool write_midi(
       rows.push_back(Row{tick, order++, channel, status, d1, d2});
    };
 
-   // Manager channel 0, members on 1..N. RPN 6 sets the zone member count.
-   add(0, 0, 0xB0, 101, 0);
-   add(0, 0, 0xB0, 100, 6);
-   add(0, 0, 0xB0, 6, channels);
-   add(0, 0, 0xB0, 38, 0);
-   for (int c = 1; c <= channels; ++c) {
-      add(0, c, 0xB0, 101, 0);
-      add(0, c, 0xB0, 100, 0);
-      add(0, c, 0xB0, 6, bend_semitones);
-      add(0, c, 0xB0, 38, 0);
+   for (auto const& event : make_mpe_setup_events(channels, bend_semitones)) {
+      add(0, event.channel, event.status, event.data1, event.data2);
    }
    for (auto const& e : events) {
       int tick = int(std::llround(double(e.sample) * 960.0 / double(sps)));

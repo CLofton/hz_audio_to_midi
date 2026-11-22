@@ -197,6 +197,29 @@ void test_midi_file_contains_the_note() {
    expect(manager_cc == expected_mpe_setup, "manager RPN 6 declares a 1-channel MPE zone");
 }
 
+void test_shared_mpe_setup_builder() {
+   std::cout << "test_shared_mpe_setup_builder\n";
+   auto setup = hz::make_mpe_setup_events(1, 48);
+   std::vector<int> actual;
+   for (auto const& event : setup) {
+      actual.push_back(event.channel);
+      actual.push_back(event.status);
+      actual.push_back(event.data1);
+      actual.push_back(event.data2);
+   }
+   std::vector<int> const expected = {
+      0, 0xB0, 101, 0,
+      0, 0xB0, 100, 6,
+      0, 0xB0, 6, 1,
+      0, 0xB0, 38, 0,
+      1, 0xB0, 101, 0,
+      1, 0xB0, 100, 0,
+      1, 0xB0, 6, 48,
+      1, 0xB0, 38, 0,
+   };
+   expect(actual == expected, "shared builder emits exact manager and member RPN setup");
+}
+
 void test_short_live_blocks_are_buffered() {
    std::cout << "test_short_live_blocks_are_buffered\n";
    hz::Config cfg;
@@ -377,6 +400,7 @@ int main() {
    test_two_channels_stay_independent();
    test_detune_is_pitch_bend();
    test_midi_file_contains_the_note();
+   test_shared_mpe_setup_builder();
    test_short_live_blocks_are_buffered();
    test_stream_timestamps_are_absolute();
    test_final_empty_block_releases_every_channel();

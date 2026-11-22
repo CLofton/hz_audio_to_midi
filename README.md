@@ -27,6 +27,18 @@ make q-demo Q_PATH=../Q
 
 `make q-demo` writes `build/a440_q.mid`. `make q-test` runs all 18 Q recordings (open, 12th, and 24th fret) plus a six-channel divided-audio take, checking every note and MPE member channel. WAV input accepts 16-bit PCM and 32-bit IEEE float. Use `--low-hz` and `--high-hz` to set the detector range; the High E 24th-fret case uses `263.7..1648 Hz`. The ordinary `make test` neither fetches nor includes Q.
 
+## Native live-I/O slice
+
+On macOS, `make live-test` builds the C++20/CoreMIDI/CoreAudio slice and runs software-only integration tests. It links AudioToolbox, CoreAudio, CoreMIDI, and CoreFoundation; Q is not required.
+
+```sh
+./build/hz_live --list
+./build/hz_live --self-test
+./build/hz_live --sine-test
+```
+
+`--list` reads device properties only: CoreAudio input UID/name/rate/channel count/default marker and CoreMIDI destination index/name/unique ID. It does not create an audio unit or open the microphone. The self-test and sine-test send only to a temporary software virtual destination, never an external MIDI destination. They verify exact MPE setup and note UMP words; virtual send-to-receive latency is diagnostic, not a timing pass/fail gate. AUHAL input streaming and end-to-end hardware latency measurement are the next work and are not implemented.
+
 ![Hz Pitch to MIDI](https://github.com/cycfi/hz_audio_to_midi/blob/master/docs/images/MIDI_Guitar-16-9.jpg?raw=true)
 
 This project aims to create an open-source multichannel pitch-to-MIDI converter with 8 audio inputs, one MIDI output, and one USB-C output, leveraging the Hz Pitch Detection system (part of the Q DSP library) for precise and efficient pitch tracking The device will convert audio signals from multiple sources into MIDI (MPE and MIDI-2) in real time with minimal latency, providing a high-quality and customizable solution for electric guitars, basses, and other instruments.
