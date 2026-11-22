@@ -1,5 +1,20 @@
 # Multichannel Pitch-to-MIDI Converter
 
+**This fork is a build, not only a prospectus.** The plan and the order of work are in [PLAN.md](PLAN.md).
+
+```
+make test
+make demo
+```
+
+`make demo` writes `build/a440.mid`: a 440 Hz tone as MPE note 69, manager on MIDI channel 1, the note on channel 2. A 16-bit PCM WAV uses the same engine:
+
+```
+./build/hz_convert --wav take.wav --out take.mid
+```
+
+One monophonic tracker per input. A single mixed pickup cannot produce chord MIDI. The detector in this slice is a bootstrap autocorrelation, accurate on clean tones; production pitch detection is still Cycfi Q's BACF, not yet linked.
+
 ![Hz Pitch to MIDI](https://github.com/cycfi/hz_audio_to_midi/blob/master/docs/images/MIDI_Guitar-16-9.jpg?raw=true)
 
 This project aims to create an open-source multichannel pitch-to-MIDI converter with 8 audio inputs, one MIDI output, and one USB-C output, leveraging the Hz Pitch Detection system (part of the Q DSP library) for precise and efficient pitch tracking The device will convert audio signals from multiple sources into MIDI (MPE and MIDI-2) in real time with minimal latency, providing a high-quality and customizable solution for electric guitars, basses, and other instruments.
