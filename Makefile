@@ -27,11 +27,11 @@ $(BUILD)/test_converter: tests/test_converter.cpp src/hz/converter.hpp
 	mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ tests/test_converter.cpp
 
-$(BUILD)/test_live_unit: tests/test_live_unit.cpp src/hz/live.hpp src/hz/converter.hpp
+$(BUILD)/test_live_unit: tests/test_live_unit.cpp src/hz/live.hpp src/hz/live_stream.hpp src/hz/converter.hpp
 	mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(LIVE_FLAGS) -o $@ tests/test_live_unit.cpp
 
-$(BUILD)/hz_live: tools/hz_live.cpp src/hz/live.cpp src/hz/live.hpp src/hz/converter.hpp
+$(BUILD)/hz_live: tools/hz_live.cpp src/hz/live.cpp src/hz/live.hpp src/hz/live_stream.hpp src/hz/converter.hpp
 	mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(LIVE_FLAGS) -o $@ tools/hz_live.cpp src/hz/live.cpp $(LIVE_FRAMEWORKS)
 

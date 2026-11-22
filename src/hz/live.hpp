@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hz/converter.hpp"
+#include "hz/live_stream.hpp"
 
 #include <cstdint>
 #include <string>
@@ -35,5 +36,24 @@ struct AudioInputDeviceInfo {
 };
 
 std::vector<AudioInputDeviceInfo> enumerate_audio_input_devices();
+
+struct LiveRunReport {
+   std::uint32_t device_buffer_frames = 0;
+   std::uint32_t maximum_frames = 0;
+   double sample_rate = 0.0;
+   int channels = 0;
+   std::uint64_t captured_blocks = 0;
+   std::uint64_t captured_frames = 0;
+   std::uint32_t queue_high_water = 0;
+   std::uint32_t overflow_count = 0;
+   std::uint32_t render_error_count = 0;
+   std::uint32_t discontinuity_count = 0;
+   double converter_total_ms = 0.0;
+   double max_capture_to_send_ms = 0.0;
+};
+
+// The sole API that opens the selected input and sends to an external destination.
+// Callers must obtain both selectors explicitly; tests must not invoke this function.
+bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string& message);
 
 } // namespace hz

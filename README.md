@@ -35,9 +35,15 @@ On macOS, `make live-test` builds the C++20/CoreMIDI/CoreAudio slice and runs so
 ./build/hz_live --list
 ./build/hz_live --self-test
 ./build/hz_live --sine-test
+# Only after selecting an input and destination from --list:
+./build/hz_live --run --input UID --midi-index N --seconds 5
 ```
 
-`--list` reads device properties only: CoreAudio input UID/name/rate/channel count/default marker and CoreMIDI destination index/name/unique ID. It does not create an audio unit or open the microphone. The self-test and sine-test send only to a temporary software virtual destination, never an external MIDI destination. They verify exact MPE setup and note UMP words; virtual send-to-receive latency is diagnostic, not a timing pass/fail gate. AUHAL input streaming and end-to-end hardware latency measurement are the next work and are not implemented.
+`--list` reads device properties only: CoreAudio input UID/name/rate/channel count/default marker and CoreMIDI destination index/name/unique ID. It does not create an audio unit or open the microphone. The self-test and sine-test send only to a temporary software virtual destination, never an external MIDI destination. They verify exact MPE setup and note UMP words; virtual send-to-receive latency is diagnostic, not a timing pass/fail gate. `make live-test` never executes `--run`.
+
+Live mode is opt-in and requires an exact input UID, an external MIDI destination index, and a finite duration in `(0, 3600]` seconds. It requests a 512-frame device buffer, accepts only 48 kHz and 1–8 input channels, and rejects devices whose reported variable block range can exceed 1024 frames. AUHAL renders float32 packed noninterleaved audio into a fixed 16-slot SPSC ring; a worker performs conversion and sends UMP with CoreMIDI timestamp 0. Overflow, render errors, oversized blocks, and sample discontinuities are fatal. Shutdown stops capture, drains the worker, sends final note-offs, and joins before disposing the unit.
+
+The run report includes actual device buffer size/rate, queue high-water and failures, converter time, and maximum capture-buffer-to-MIDI-send time. The latter is a pipeline diagnostic, **not acoustic onset latency**; hardware streaming and end-to-end acoustic latency still require a user-selected microphone and MIDI destination to verify.
 
 ![Hz Pitch to MIDI](https://github.com/cycfi/hz_audio_to_midi/blob/master/docs/images/MIDI_Guitar-16-9.jpg?raw=true)
 

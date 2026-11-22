@@ -1,10 +1,13 @@
 #include "hz/live.hpp"
 
+#include <AudioToolbox/AudioUnit.h>
 #include <CoreAudio/CoreAudio.h>
 #include <CoreMIDI/CoreMIDI.h>
+#include <mach/mach_time.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -15,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -49,6 +53,13 @@ void get_audio_property(
    UInt32 size, void* data, char const* operation) {
    require_success(
       AudioObjectGetPropertyData(object, &address, 0, nullptr, &size, data), operation);
+}
+
+void set_audio_property(
+   AudioObjectID object, AudioObjectPropertyAddress const& address,
+   UInt32 size, void const* data, char const* operation) {
+   require_success(
+      AudioObjectSetPropertyData(object, &address, 0, nullptr, size, data), operation);
 }
 
 class VirtualMidiLoopback {
@@ -176,6 +187,186 @@ std::string words_hex(std::vector<std::uint32_t> const& words) {
    return out.str();
 }
 
+class CoreMidiOutput {
+public:
+   explicit CoreMidiOutput(int destination_index) {
+      try {
+         require_success(
+            MIDIClientCreateWithBlock(
+               CFSTR("hz_live capture client"), &client_, ^(MIDINotification const*) {}),
+            "MIDIClientCreateWithBlock(live)");
+         require_success(
+            MIDIOutputPortCreate(client_, CFSTR("hz_live capture output"), &output_),
+            "MIDIOutputPortCreate(live)");
+         destination_ = MIDIGetDestination(static_cast<ItemCount>(destination_index));
+         if (destination_ == 0) throw std::runtime_error("selected MIDI destination is unavailable");
+      } catch (...) {
+         cleanup();
+         throw;
+      }
+   }
+
+   CoreMidiOutput(CoreMidiOutput const&) = delete;
+   CoreMidiOutput& operator=(CoreMidiOutput const&) = delete;
+   ~CoreMidiOutput() { cleanup(); }
+
+   void send(std::vector<MidiEvent> const& events) {
+      if (events.empty()) return;
+      alignas(UInt32) std::array<std::byte, 8192> storage{};
+      auto* event_list = reinterpret_cast<MIDIEventList*>(storage.data());
+      MIDIEventPacket* packet = MIDIEventListInit(event_list, kMIDIProtocol_1_0);
+      for (auto const& event : events) {
+         UInt32 word = midi1_channel_voice_ump(event);
+         packet = MIDIEventListAdd(
+            event_list, static_cast<UInt32>(storage.size()), packet, 0, 1, &word);
+         if (packet == nullptr) throw std::runtime_error("CoreMIDI event list capacity exceeded");
+      }
+      require_success(MIDISendEventList(output_, destination_, event_list), "MIDISendEventList(live)");
+   }
+
+private:
+   void cleanup() {
+      if (output_ != 0) MIDIPortDispose(output_);
+      if (client_ != 0) MIDIClientDispose(client_);
+      output_ = 0;
+      client_ = 0;
+      destination_ = 0;
+   }
+
+   MIDIClientRef client_ = 0;
+   MIDIPortRef output_ = 0;
+   MIDIEndpointRef destination_ = 0;
+};
+
+enum CallbackFailure {
+   callback_failure_none = 0,
+   callback_failure_invalid_buffer = 1,
+   callback_failure_too_many_frames = 2,
+   callback_failure_overflow = 3,
+   callback_failure_render = 4,
+   callback_failure_invalid_timestamp = 5,
+   callback_failure_discontinuity = 6
+};
+
+struct LiveCallbackState {
+   explicit LiveCallbackState(int channel_count)
+      : channels(static_cast<UInt32>(channel_count)), timeline(&callback_discontinuities) {}
+
+   AudioUnit unit = nullptr;
+   UInt32 channels;
+   CaptureRing ring;
+   std::atomic<bool> stop{false};
+   std::atomic<bool> fatal{false};
+   std::atomic<int> callback_failure{callback_failure_none};
+   std::atomic<OSStatus> render_status{noErr};
+   std::atomic<std::uint32_t> render_errors{0};
+   std::mutex error_mutex;
+   std::string worker_error;
+   std::atomic<std::uint32_t> callback_discontinuities{0};
+   CaptureTimeline timeline;
+   alignas(AudioBufferList) std::array<std::byte,
+      sizeof(AudioBufferList) + (capture_max_channels - 1) * sizeof(AudioBuffer)> abl_storage{};
+};
+
+void callback_fatal(LiveCallbackState& state, int failure) noexcept {
+   int expected = callback_failure_none;
+   state.callback_failure.compare_exchange_strong(expected, failure, std::memory_order_relaxed);
+   state.fatal.store(true, std::memory_order_release);
+}
+
+OSStatus capture_input_callback(
+   void* reference, AudioUnitRenderActionFlags* action_flags, AudioTimeStamp const* timestamp,
+   UInt32, UInt32 frames, AudioBufferList* io_data
+) noexcept {
+   auto& state = *static_cast<LiveCallbackState*>(reference);
+   if (state.fatal.load(std::memory_order_acquire)) return kAudio_ParamError;
+   if (io_data != nullptr || timestamp == nullptr) {
+      callback_fatal(state, callback_failure_invalid_buffer);
+      return kAudio_ParamError;
+   }
+   if (frames > std::uint32_t(capture_max_frames)) {
+      callback_fatal(state, callback_failure_too_many_frames);
+      return kAudio_ParamError;
+   }
+   std::uint64_t start_sample = 0;
+   auto const timeline_result = state.timeline.accept(
+      (timestamp->mFlags & kAudioTimeStampSampleTimeValid) != 0,
+      timestamp->mSampleTime, frames, start_sample);
+   if (timeline_result == CaptureTimelineResult::invalid_timestamp) {
+      callback_fatal(state, callback_failure_invalid_timestamp);
+      return kAudio_ParamError;
+   }
+   if (timeline_result == CaptureTimelineResult::discontinuity) {
+      callback_fatal(state, callback_failure_discontinuity);
+      return kAudio_ParamError;
+   }
+   if (frames == 0) return noErr;
+   CaptureBlock* block = state.ring.acquire_write();
+   if (block == nullptr) {
+      callback_fatal(state, callback_failure_overflow);
+      return kAudio_ParamError;
+   }
+
+   auto* buffers = reinterpret_cast<AudioBufferList*>(state.abl_storage.data());
+   buffers->mNumberBuffers = state.channels;
+   for (UInt32 channel = 0; channel < state.channels; ++channel) {
+      buffers->mBuffers[channel].mNumberChannels = 1;
+      buffers->mBuffers[channel].mDataByteSize = frames * UInt32(sizeof(float));
+      buffers->mBuffers[channel].mData = block->samples[channel].data();
+   }
+   OSStatus const status = AudioUnitRender(
+      state.unit, action_flags, timestamp, 1, frames, buffers);
+   if (status != noErr) {
+      state.render_status.store(status, std::memory_order_relaxed);
+      state.render_errors.fetch_add(1, std::memory_order_relaxed);
+      callback_fatal(state, callback_failure_render);
+      return status;
+   }
+   for (UInt32 channel = 0; channel < state.channels; ++channel) {
+      if (buffers->mBuffers[channel].mDataByteSize != frames * UInt32(sizeof(float))) {
+         state.render_status.store(kAudio_ParamError, std::memory_order_relaxed);
+         state.render_errors.fetch_add(1, std::memory_order_relaxed);
+         callback_fatal(state, callback_failure_render);
+         return kAudio_ParamError;
+      }
+   }
+   std::uint64_t const host_time = (timestamp->mFlags & kAudioTimeStampHostTimeValid) != 0
+      ? timestamp->mHostTime : AudioGetCurrentHostTime();
+   state.ring.commit_write(frames, state.channels, start_sample, host_time);
+   return noErr;
+}
+
+void worker_fatal(LiveCallbackState& state, std::string const& error) {
+   {
+      std::lock_guard lock(state.error_mutex);
+      if (state.worker_error.empty()) state.worker_error = error;
+   }
+   state.fatal.store(true, std::memory_order_release);
+}
+
+std::string callback_error_message(LiveCallbackState const& state) {
+   switch (state.callback_failure.load(std::memory_order_relaxed)) {
+      case callback_failure_invalid_buffer:
+         return "AUHAL input callback received an invalid buffer contract";
+      case callback_failure_too_many_frames:
+         return "AUHAL input callback exceeded the 1024-frame preallocated block";
+      case callback_failure_overflow:
+         return "capture SPSC ring overflowed";
+      case callback_failure_render: {
+         std::ostringstream message;
+         message << "AudioUnitRender failed with OSStatus "
+                 << state.render_status.load(std::memory_order_relaxed);
+         return message.str();
+      }
+      case callback_failure_invalid_timestamp:
+         return "AUHAL input callback received a missing or invalid device sample timestamp";
+      case callback_failure_discontinuity:
+         return "AUHAL device sample timestamp discontinuity detected";
+      default:
+         return "live capture failed";
+   }
+}
+
 } // namespace
 
 std::vector<MidiDestinationInfo> enumerate_midi_destinations() {
@@ -277,6 +468,228 @@ std::vector<AudioInputDeviceInfo> enumerate_audio_input_devices() {
          device == default_input});
    }
    return inputs;
+}
+
+bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string& message) {
+   report = LiveRunReport{};
+   message.clear();
+   if (options.input_uid.empty() || options.midi_index < 0
+      || !std::isfinite(options.seconds) || options.seconds <= 0.0 || options.seconds > 3600.0) {
+      message = "live run requires an input UID, non-negative MIDI index, and duration in (0, 3600]";
+      return false;
+   }
+
+   AudioUnit unit = nullptr;
+   bool initialized = false;
+   bool started = false;
+   std::thread worker;
+   auto state = std::make_shared<LiveCallbackState>(1);
+   std::uint32_t worker_discontinuities = 0;
+   OSStatus stop_status = noErr;
+   auto shutdown = [&] {
+      if (started) {
+         OSStatus const status = AudioOutputUnitStop(unit);
+         if (stop_status == noErr) stop_status = status;
+         started = false;
+      }
+      if (worker.joinable()) {
+         state->stop.store(true, std::memory_order_release);
+         worker.join();
+      }
+      if (initialized) {
+         AudioUnitUninitialize(unit);
+         initialized = false;
+      }
+      if (unit != nullptr) {
+         AudioComponentInstanceDispose(unit);
+         unit = nullptr;
+      }
+   };
+
+   try {
+      auto const inputs = enumerate_audio_input_devices();
+      auto const input = std::find_if(inputs.begin(), inputs.end(), [&](auto const& candidate) {
+         return candidate.uid == options.input_uid;
+      });
+      if (input == inputs.end()) throw std::runtime_error("selected audio input UID was not found");
+      if (options.midi_index >= static_cast<int>(MIDIGetNumberOfDestinations())) {
+         throw std::runtime_error("selected MIDI destination index is out of range");
+      }
+
+      auto const range_address = audio_address(
+         kAudioDevicePropertyBufferFrameSizeRange, kAudioObjectPropertyScopeGlobal);
+      AudioValueRange frame_range{};
+      get_audio_property(input->id, range_address, sizeof(frame_range), &frame_range,
+         "AudioObjectGetPropertyData(buffer frame size range)");
+      CaptureConfig capture_config;
+      capture_config.sample_rate = input->sample_rate;
+      capture_config.channels = input->input_channels;
+      capture_config.maximum_frames = static_cast<int>(std::ceil(frame_range.mMaximum));
+      if (char const* error = capture_config_error(capture_config)) {
+         throw std::runtime_error(error);
+      }
+      report.sample_rate = input->sample_rate;
+      report.channels = input->input_channels;
+      report.maximum_frames = static_cast<std::uint32_t>(capture_config.maximum_frames);
+
+      auto const buffer_address = audio_address(
+         kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal);
+      UInt32 requested_buffer = 512;
+      set_audio_property(input->id, buffer_address, sizeof(requested_buffer), &requested_buffer,
+         "AudioObjectSetPropertyData(buffer frame size 512)");
+      UInt32 actual_buffer = 0;
+      get_audio_property(input->id, buffer_address, sizeof(actual_buffer), &actual_buffer,
+         "AudioObjectGetPropertyData(buffer frame size readback)");
+      if (actual_buffer == 0 || actual_buffer > std::uint32_t(capture_max_frames)) {
+         throw std::runtime_error("device buffer size readback exceeds preallocated capture blocks");
+      }
+      report.device_buffer_frames = actual_buffer;
+
+      AudioComponentDescription description{};
+      description.componentType = kAudioUnitType_Output;
+      description.componentSubType = kAudioUnitSubType_HALOutput;
+      description.componentManufacturer = kAudioUnitManufacturer_Apple;
+      AudioComponent component = AudioComponentFindNext(nullptr, &description);
+      if (component == nullptr) throw std::runtime_error("AUHAL component was not found");
+      require_success(AudioComponentInstanceNew(component, &unit), "AudioComponentInstanceNew(AUHAL)");
+      state = std::make_shared<LiveCallbackState>(input->input_channels);
+      state->unit = unit;
+
+      UInt32 disable_output = 0;
+      require_success(AudioUnitSetProperty(
+         unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0,
+         &disable_output, sizeof(disable_output)), "AUHAL disable output element 0");
+      UInt32 enable_input = 1;
+      require_success(AudioUnitSetProperty(
+         unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1,
+         &enable_input, sizeof(enable_input)), "AUHAL enable input element 1");
+      AudioDeviceID device = input->id;
+      require_success(AudioUnitSetProperty(
+         unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+         &device, sizeof(device)), "AUHAL select current input device");
+      AURenderCallbackStruct callback{&capture_input_callback, state.get()};
+      require_success(AudioUnitSetProperty(
+         unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0,
+         &callback, sizeof(callback)), "AUHAL set input callback");
+
+      AudioStreamBasicDescription format{};
+      format.mSampleRate = 48000.0;
+      format.mFormatID = kAudioFormatLinearPCM;
+      format.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+         | kAudioFormatFlagIsNonInterleaved;
+      format.mBytesPerPacket = sizeof(float);
+      format.mFramesPerPacket = 1;
+      format.mBytesPerFrame = sizeof(float);
+      format.mChannelsPerFrame = static_cast<UInt32>(input->input_channels);
+      format.mBitsPerChannel = 8 * sizeof(float);
+      require_success(AudioUnitSetProperty(
+         unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+         &format, sizeof(format)), "AUHAL set float32 packed noninterleaved input format");
+      UInt32 maximum_frames = static_cast<UInt32>(capture_config.maximum_frames);
+      require_success(AudioUnitSetProperty(
+         unit, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0,
+         &maximum_frames, sizeof(maximum_frames)), "AUHAL set MaximumFramesPerSlice");
+      require_success(AudioUnitInitialize(unit), "AudioUnitInitialize(AUHAL)");
+      initialized = true;
+
+      Config converter_config;
+      converter_config.sps = 48000.0f;
+      Converter converter(input->input_channels, converter_config);
+      CoreMidiOutput output(options.midi_index);
+      output.send(make_mpe_setup_events(input->input_channels, converter_config.bend_semitones));
+
+      mach_timebase_info_data_t timebase{};
+      if (mach_timebase_info(&timebase) != KERN_SUCCESS || timebase.denom == 0) {
+         throw std::runtime_error("mach_timebase_info failed");
+      }
+      worker = std::thread([&, converter = std::move(converter)]() mutable {
+         CaptureSequence sequence;
+         std::array<float const*, capture_max_channels> channel_data{};
+         try {
+            for (;;) {
+               while (CaptureBlock const* block = state->ring.acquire_read()) {
+                  if (!sequence.accept(block->start_sample, block->frames)) {
+                     ++worker_discontinuities;
+                     worker_fatal(*state, "capture sample discontinuity detected");
+                     state->ring.release_read();
+                     continue;
+                  }
+                  for (UInt32 channel = 0; channel < state->channels; ++channel) {
+                     channel_data[channel] = block->samples[channel].data();
+                  }
+                  auto const converter_started = Clock::now();
+                  auto events = converter.feed(
+                     channel_data.data(), static_cast<int>(state->channels),
+                     static_cast<int>(block->frames), false);
+                  report.converter_total_ms += std::chrono::duration<double, std::milli>(
+                     Clock::now() - converter_started).count();
+                  output.send(events);
+                  auto const sent_host_time = AudioGetCurrentHostTime();
+                  if (sent_host_time >= block->capture_host_time) {
+                     long double const ticks = sent_host_time - block->capture_host_time;
+                     double const elapsed_ms = static_cast<double>(
+                        ticks * timebase.numer / timebase.denom / 1000000.0L);
+                     report.max_capture_to_send_ms = std::max(
+                        report.max_capture_to_send_ms, elapsed_ms);
+                  }
+                  ++report.captured_blocks;
+                  report.captured_frames += block->frames;
+                  state->ring.release_read();
+               }
+               if (state->stop.load(std::memory_order_acquire)) break;
+               std::this_thread::sleep_for(std::chrono::microseconds(200));
+            }
+         } catch (std::exception const& error) {
+            worker_fatal(*state, std::string("live worker failed: ") + error.what());
+         }
+         try {
+            auto const final_started = Clock::now();
+            auto final_events = converter.feed(nullptr, 0, 0, true);
+            report.converter_total_ms += std::chrono::duration<double, std::milli>(
+               Clock::now() - final_started).count();
+            output.send(final_events);
+         } catch (std::exception const& error) {
+            worker_fatal(*state, std::string("live final note-off flush failed: ") + error.what());
+         }
+      });
+
+      require_success(AudioOutputUnitStart(unit), "AudioOutputUnitStart(AUHAL)");
+      started = true;
+      auto const deadline = Clock::now() + std::chrono::duration<double>(options.seconds);
+      while (Clock::now() < deadline && !state->fatal.load(std::memory_order_acquire)) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      shutdown();
+
+      report.queue_high_water = state->ring.queue_high_water();
+      report.overflow_count = state->ring.overflow_count();
+      report.render_error_count = state->render_errors.load(std::memory_order_relaxed);
+      report.discontinuity_count = worker_discontinuities
+         + state->callback_discontinuities.load(std::memory_order_relaxed);
+      if (stop_status != noErr) require_success(stop_status, "AudioOutputUnitStop(AUHAL)");
+      if (state->fatal.load(std::memory_order_acquire)) {
+         std::string worker_error;
+         {
+            std::lock_guard lock(state->error_mutex);
+            worker_error = state->worker_error;
+         }
+         message = !worker_error.empty() ? worker_error : callback_error_message(*state);
+         return false;
+      }
+      std::ostringstream success;
+      success << "live run complete: bounded duration elapsed; worker drained and final note-offs sent";
+      message = success.str();
+      return true;
+   } catch (std::exception const& error) {
+      shutdown();
+      report.queue_high_water = state->ring.queue_high_water();
+      report.overflow_count = state->ring.overflow_count();
+      report.render_error_count = state->render_errors.load(std::memory_order_relaxed);
+      report.discontinuity_count = worker_discontinuities
+         + state->callback_discontinuities.load(std::memory_order_relaxed);
+      message = std::string("live run failed: ") + error.what();
+      return false;
+   }
 }
 
 bool run_midi_self_test(std::string& report) {
