@@ -13,7 +13,19 @@ make demo
 ./build/hz_convert --wav take.wav --out take.mid
 ```
 
-One monophonic tracker per input. A single mixed pickup cannot produce chord MIDI. The detector in this slice is a bootstrap autocorrelation, accurate on clean tones; production pitch detection is still Cycfi Q's BACF, not yet linked.
+One monophonic tracker per input. A single mixed pickup cannot produce chord MIDI. The default binary uses bootstrap autocorrelation. The optional Q binary uses Cycfi Q's BACF `pitch_detector` behind the same tracker and MIDI path.
+
+Keep Q as an external dependency (verified with v1.5.4, commit `efe26114f39e4a78bd67c1456a25487d356fb910`):
+
+```sh
+git clone --recurse-submodules https://github.com/cycfi/Q.git ../Q
+git -C ../Q checkout efe26114f39e4a78bd67c1456a25487d356fb910
+git -C ../Q submodule update --init --recursive
+make q-test Q_PATH=../Q
+make q-demo Q_PATH=../Q
+```
+
+`make q-demo` writes `build/a440_q.mid`. `make q-test` also runs Q's six real open-string recordings and requires exactly E2, A2, D3, G3, B3, and E4. Pass a WAV to the Q-backed binary with `./build/hz_convert_q --wav take.wav --out take.mid`. The ordinary `make test` neither fetches nor includes Q.
 
 ![Hz Pitch to MIDI](https://github.com/cycfi/hz_audio_to_midi/blob/master/docs/images/MIDI_Guitar-16-9.jpg?raw=true)
 

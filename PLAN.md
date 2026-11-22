@@ -19,17 +19,17 @@ Q stays a dependency. It is MIT; this repository is GPL-3. Do not copy Q in.
 - MIDI channel 1 is the MPE manager. Input N speaks on MIDI channel N+1.
 - A complete take releases any note still held. A later live stream can pass `end_of_take=false`.
 - `write_midi` emits a Type 0 SMF: tempo, manager RPN 6 zone sizing, per-member bend-range RPN, then the notes.
-- `hz_convert` turns a sine or a 16-bit PCM WAV into that file.
+- `hz_convert` turns a sine or a 16-bit PCM WAV into that file with bootstrap autocorrelation.
+- `hz_convert_q` uses Q's `pitch_detector` behind the same tracker. `make q-test Q_PATH=/path/to/Q` and `make q-demo Q_PATH=/path/to/Q` build the optional path; Q stays external and is not needed by `make test`.
 
-This detector is the bootstrap, not the product detector. It is accurate on sines and good enough to lock the tracker and the MIDI path. It will miss what Q's BACF is for: missing fundamentals, octave jumps on a decaying guitar note, sub-cent period from zero-crossing edges, and a cost low enough for eight channels on a small MCU.
+The bootstrap detector remains the default test double. Q v1.5.4 is verified on clean tones, 256-sample live blocks with carried overlap, and Q's six open-string and six 12th-fret recordings. The Q CLI uses three-hop onset confirmation to reject startup transients. All six 24th-fret recordings currently produce no note; per-string ranges and signal conditioning are still open work.
 
 ## Next, in order
 
-1. **Q's `pitch_detector` behind the same tracker.** Needs CMake (not on this machine) and Q's headers. Keep the autocorrelation path as the test double so `make test` does not depend on Q. Swap only the estimate. Do not rewrite the note logic.
-2. **Real divided-pickup recordings.** Six or eight channels, one string each, standard tuning through a two-octave range. The pass bar is the note Q's own guitar suite already uses, not another sine.
-3. **Live I/O.** CoreAudio in, CoreMIDI out, on the Mac. Block size at or under the hop (1024 samples, about 21 ms at 48 kHz). Report end-to-end latency before touching hardware.
-4. **MIDI 2.0 UMP.** Q already has UMP, per-note controllers, and MIDI-CI, and has been checked against the MIDI Association workbench. Translate the events we already emit. Do not write a second MIDI stack.
-5. **The box.** Eight inputs, MIDI DIN, USB-C device. The firmware target is whatever already runs Q (STM32 with an FPU is the documented one; a Pico is the wrong host for eight channels of this detector). Schematic after the live Mac path is boring.
+1. **Finish the two-octave real-string pass.** Diagnose the six 24th-fret misses against Q's per-string test setup, then capture six or eight divided channels from this project's inputs. Do not tune only for sines.
+2. **Live I/O.** CoreAudio in, CoreMIDI out, on the Mac. Block size at or under the hop (1024 samples, about 21 ms at 48 kHz). Report end-to-end latency before touching hardware.
+3. **MIDI 2.0 UMP.** Q already has UMP, per-note controllers, and MIDI-CI, and has been checked against the MIDI Association workbench. Translate the events we already emit. Do not write a second MIDI stack.
+4. **The box.** Eight inputs, MIDI DIN, USB-C device. The firmware target is whatever already runs Q (STM32 with an FPU is the documented one; a Pico is the wrong host for eight channels of this detector). Schematic after the live Mac path is boring.
 
 ## Out of scope until the tracker is boring
 

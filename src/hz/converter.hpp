@@ -5,7 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hz {
@@ -140,17 +142,24 @@ struct Config {
    int window = 2048;
    int hop = 1024;
    int release_hops = 2;
+   int onset_hops = 1;
    int retrigger_hops = 2;
    int bend_semitones = 48;
    float min_periodicity = 0.72f;
    float min_rms = 0.015f;
 };
 
+// Optional stateful estimator. The final int is the window's absolute stream
+// sample, which lets an estimator consume overlap and carried tails only once.
+using PitchEstimator = std::function<PitchEstimate(
+   int, float const*, int, Config const&, int
+)>;
+
 // One monophonic tracker per input. Channel 0 is reserved for the MPE
 // manager; input N speaks on MIDI channel N+1.
 class Converter {
 public:
-   explicit Converter(int channels, Config cfg = {})
+   explicit Converter(int channels, Config cfg = {}, PitchEstimator estimator = {})
       : channels_(std::clamp(channels, 1, 15))
       , cfg_(cfg)
       , held_(static_cast<std::size_t>(channels_), -1)
@@ -158,7 +167,8 @@ public:
       , pending_(static_cast<std::size_t>(channels_), -1)
       , pending_n_(static_cast<std::size_t>(channels_), 0)
       , last_bend_(static_cast<std::size_t>(channels_), -1)
-      , buffered_(static_cast<std::size_t>(channels_)) {}
+      , buffered_(static_cast<std::size_t>(channels_))
+      , estimator_(std::move(estimator)) {}
 
    std::vector<MidiEvent> feed(std::vector<float> const& mono, bool end_of_take = true) {
       float const* p = mono.data();
@@ -186,8 +196,9 @@ public:
          int sample = stream_pos_ + pos;
          for (int c = 0; c < use; ++c) {
             float const* window = buffered_[static_cast<std::size_t>(c)].data() + pos;
-            auto est = estimate_pitch(
-               window, cfg_.window, cfg_.sps, cfg_.low_hz, cfg_.high_hz);
+            auto est = estimator_
+               ? estimator_(c, window, cfg_.window, cfg_, sample)
+               : estimate_pitch(window, cfg_.window, cfg_.sps, cfg_.low_hz, cfg_.high_hz);
             float rms = rms_of(window, cfg_.window);
             bool gated = est.valid
                && est.periodicity >= cfg_.min_periodicity
@@ -257,12 +268,25 @@ public:
                continue;
             }
 
-            pending = -1;
-            pending_n = 0;
             if (held >= 0) {
+               pending = -1;
+               pending_n = 0;
                emit_bend();
                continue;
             }
+
+            // A fresh onset needs the same stable-pitch evidence as a
+            // retrigger. This rejects one-window transients before the first
+            // note-on instead of emitting a wrong note and correcting it.
+            if (pending != note) {
+               pending = note;
+               pending_n = 1;
+            } else {
+               ++pending_n;
+            }
+            if (pending_n < cfg_.onset_hops) continue;
+            pending = -1;
+            pending_n = 0;
 
             MidiEvent on;
             on.sample = sample;
@@ -295,6 +319,8 @@ public:
             held = -1;
          }
          quiet_[static_cast<std::size_t>(c)] = 0;
+         pending_[static_cast<std::size_t>(c)] = -1;
+         pending_n_[static_cast<std::size_t>(c)] = 0;
          last_bend_[static_cast<std::size_t>(c)] = -1;
          buffered_[static_cast<std::size_t>(c)].clear();
       }
@@ -313,6 +339,7 @@ private:
    std::vector<int> pending_n_;
    std::vector<int> last_bend_;
    std::vector<std::vector<float>> buffered_;
+   PitchEstimator estimator_;
    int stream_pos_ = 0;
 };
 

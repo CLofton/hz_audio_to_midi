@@ -1,4 +1,7 @@
 #include "hz/converter.hpp"
+#ifdef HZ_WITH_Q
+#include "hz/q_pitch_estimator.hpp"
+#endif
 
 #include <cmath>
 #include <cstdint>
@@ -149,7 +152,15 @@ int main(int argc, char** argv) {
 
    hz::Config cfg;
    cfg.sps = sps;
+#ifdef HZ_WITH_Q
+   cfg.onset_hops = 3;
+   auto estimator = hz::make_q_pitch_estimator(int(channels.size()), cfg);
+   hz::Converter conv(int(channels.size()), cfg, estimator);
+   char const* detector = "q";
+#else
    hz::Converter conv(int(channels.size()), cfg);
+   char const* detector = "autocorrelation";
+#endif
    std::vector<float const*> ptrs(channels.size());
    for (std::size_t c = 0; c < channels.size(); ++c) ptrs[c] = channels[c].data();
    int frames = channels.empty() ? 0 : int(channels[0].size());
@@ -162,6 +173,7 @@ int main(int argc, char** argv) {
    int ons = 0;
    for (auto const& e : events) if (e.status == 0x90) ++ons;
    std::cout << "wrote " << out << "  channels=" << channels.size()
-             << "  frames=" << frames << "  note-ons=" << ons << "\n";
+             << "  frames=" << frames << "  note-ons=" << ons
+             << "  detector=" << detector << "\n";
    return 0;
 }

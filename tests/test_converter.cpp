@@ -306,6 +306,56 @@ void test_converter_clamps_to_mpe_member_limit() {
    expect(legal_channels, "member events never exceed MIDI channel 15");
 }
 
+void test_initial_note_waits_for_stable_pitch() {
+   std::cout << "test_initial_note_waits_for_stable_pitch\n";
+   hz::Config cfg;
+   cfg.window = 64;
+   cfg.hop = 64;
+   cfg.retrigger_hops = 2;
+   cfg.onset_hops = 2;
+   int call = 0;
+   hz::PitchEstimator estimator = [&call](int, float const*, int, hz::Config const&, int) {
+      int const notes[] = {55, 40, 40, 40};
+      hz::PitchEstimate est;
+      est.hz = hz::hz_of_note(notes[std::min(call, 3)]);
+      est.periodicity = 1.f;
+      est.valid = true;
+      ++call;
+      return est;
+   };
+   auto samples = tone(440.f, 48000.f, 256.f / 48000.f);
+   hz::Converter conv(1, cfg, estimator);
+   auto ons = note_ons(conv.feed(samples));
+   expect(ons.size() == 1, "one-hop startup pitch does not emit a false note");
+   if (!ons.empty()) expect(ons[0].data1 == 40, "first note-on is the stable pitch");
+}
+
+void test_take_end_resets_pending_onset() {
+   std::cout << "test_take_end_resets_pending_onset\n";
+   hz::Config cfg;
+   cfg.window = 64;
+   cfg.hop = 64;
+   cfg.onset_hops = 3;
+   hz::PitchEstimator estimator = [](int, float const*, int, hz::Config const&, int) {
+      hz::PitchEstimate est;
+      est.hz = 440.f;
+      est.periodicity = 1.f;
+      est.valid = true;
+      return est;
+   };
+   auto samples = tone(440.f, 48000.f, 0.05f);
+   samples.resize(192);
+   hz::Converter conv(1, cfg, estimator);
+
+   std::vector<float> first(samples.begin(), samples.begin() + 64);
+   auto first_ons = note_ons(conv.feed(first, true));
+   expect(first_ons.empty(), "one-window first take leaves no confirmed onset");
+
+   std::vector<float> second(samples.begin(), samples.begin() + 128);
+   auto second_ons = note_ons(conv.feed(second, true));
+   expect(second_ons.empty(), "next take restarts the three-window onset confirmation");
+}
+
 void test_buffer_end_releases_the_note() {
    std::cout << "test_buffer_end_releases_the_note\n";
    auto samples = tone(440.f, 48000.f, 0.4f);
@@ -332,6 +382,8 @@ int main() {
    test_final_empty_block_releases_every_channel();
    test_variable_channel_live_block_does_not_mutate_state();
    test_converter_clamps_to_mpe_member_limit();
+   test_initial_note_waits_for_stable_pitch();
+   test_take_end_resets_pending_onset();
    test_buffer_end_releases_the_note();
    if (g_failed) {
       std::cerr << g_failed << " assertion(s) failed\n";
