@@ -45,6 +45,20 @@ Live mode is opt-in and requires an exact input UID, an external MIDI destinatio
 
 The run report includes actual device buffer size/rate, queue high-water and failures, converter time, and maximum capture-buffer-to-MIDI-send time. The latter is a pipeline diagnostic, **not acoustic onset latency**; hardware streaming and end-to-end acoustic latency still require a user-selected microphone and MIDI destination to verify.
 
+## Optional MIDI 2.0 virtual-output slice
+
+With the same external Q checkout, run:
+
+```sh
+make midi2-test Q_PATH=/path/to/Q
+./build/hz_midi2_test --self-test
+./build/hz_midi2_test --sine-test
+```
+
+`Midi2EventTranslator` uses Q's typed MIDI 1.0 messages, `to_midi2` translator, and UMP packet words; this repository does not define MIDI 2.0 packet layouts or resolution scaling. Shared MPE RPN setup becomes MIDI 2.0 registered-controller packets. CoreMIDI `MIDIDestinationCreateWithProtocol` and `MIDIEventListInit` both use `kMIDIProtocol_2_0` for software-only loopback. Q's header-only MIDI library is sufficient here; `q_io` and libremidi are not required.
+
+The target requires a valid `Q_PATH` and is independent of `make test` and `make live-test`. Its unit tests compare exact note-on, note-off, pitch-bend, ordinary-CC, and MPE-setup words, and reject unsupported statuses and out-of-range fields with explicit errors. The virtual tests compare exact delivered words for shared MPE setup plus a converted 47-block synthetic A4, center bend, and final note-off. They create only a temporary virtual destination and send only to that destination; they do not open audio input or transmit to an external MIDI endpoint. Hardware protocol negotiation and receiver compatibility remain acceptance work.
+
 ![Hz Pitch to MIDI](https://github.com/cycfi/hz_audio_to_midi/blob/master/docs/images/MIDI_Guitar-16-9.jpg?raw=true)
 
 This project aims to create an open-source multichannel pitch-to-MIDI converter with 8 audio inputs, one MIDI output, and one USB-C output, leveraging the Hz Pitch Detection system (part of the Q DSP library) for precise and efficient pitch tracking The device will convert audio signals from multiple sources into MIDI (MPE and MIDI-2) in real time with minimal latency, providing a high-quality and customizable solution for electric guitars, basses, and other instruments.

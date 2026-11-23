@@ -23,15 +23,16 @@ Q stays a dependency. It is MIT; this repository is GPL-3. Do not copy Q in.
 - `hz_convert_q` uses Q's `pitch_detector` behind the same tracker. `make q-test Q_PATH=/path/to/Q` and `make q-demo Q_PATH=/path/to/Q` build the optional path; Q stays external and is not needed by `make test`. `--low-hz` and `--high-hz` set the detector range.
 
 - `hz_live --list` performs native CoreAudio/CoreMIDI property enumeration without creating AUHAL or opening the microphone. `--self-test` and `--sine-test` use only a temporary software virtual MIDI destination and verify exact MPE/note UMP delivery; virtual latency is reported diagnostically.
+- Opt-in `hz_live --run` implements AUHAL capture into a fixed SPSC ring, worker conversion, external CoreMIDI output, CoreAudio timestamp-gap detection, and drained final note-offs. It requires an explicit input UID, destination index, and bounded duration. No hardware stream has been run.
+- `Midi2EventTranslator` uses Q's `to_midi2` and UMP packet words. `make midi2-test Q_PATH=/path/to/Q` verifies golden MIDI 2.0 note/bend/controller words and protocol-2 virtual delivery of shared MPE setup, a streamed A4, and final note-off. No external receiver has been tested.
 - `write_midi` and live output share `make_mpe_setup_events`, so manager/member RPN configuration cannot diverge.
 
 The bootstrap detector remains the default test double. Q v1.5.4 is verified on clean tones, 256-sample live blocks with carried overlap, all 18 open/12th/24th-fret recordings, and a six-channel divided-audio take with the expected note on each MPE member. The Q CLI uses three-hop onset confirmation to reject startup transients; the High E 24th-fret case uses Q's per-string `263.7..1648 Hz` range.
 
 ## Next, in order
 
-1. **AUHAL streaming (next).** CoreAudio/CoreMIDI enumeration and software virtual CoreMIDI tests are running, but AUHAL input streaming is not implemented. Add block capture at or under the hop (1024 samples, about 21 ms at 48 kHz), then measure real audio-to-MIDI latency before touching external hardware or capturing the project's divided interface.
-2. **MIDI 2.0 UMP.** Q already has UMP, per-note controllers, and MIDI-CI, and has been checked against the MIDI Association workbench. Translate the events we already emit. Do not write a second MIDI stack.
-3. **The box.** Eight inputs, MIDI DIN, USB-C device. The firmware target is whatever already runs Q (STM32 with an FPU is the documented one; a Pico is the wrong host for eight channels of this detector). Schematic after the live Mac path is boring.
+1. **Hardware acceptance.** Select a microphone and MIDI destination explicitly, validate AUHAL timestamps and shutdown, then measure real audio-to-MIDI latency. Test a MIDI 2.0 receiver before relying on protocol negotiation.
+2. **The box.** Eight inputs, MIDI DIN, USB-C device. The firmware target is whatever already runs Q (STM32 with an FPU is the documented one; a Pico is the wrong host for eight channels of this detector). Schematic after the live Mac path is boring.
 
 ## Out of scope until the tracker is boring
 
