@@ -50,10 +50,14 @@ struct LiveRunReport {
    std::uint32_t discontinuity_count = 0;
    double converter_total_ms = 0.0;
    double max_capture_to_send_ms = 0.0;
+   std::uint64_t virtual_words = 0;
+   std::uint64_t virtual_note_ons = 0;
+   std::uint64_t virtual_note_offs = 0;
+   bool virtual_setup_verified = false;
 };
 
-// The sole API that opens the selected input and sends to an external destination.
-// Callers must obtain both selectors explicitly; tests must not invoke this function.
+// Opens the selected input only after explicit validation. Output is either the
+// selected external index or a private software virtual destination, never both.
 bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string& message);
 
 } // namespace hz

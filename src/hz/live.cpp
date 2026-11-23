@@ -1,4 +1,6 @@
 #include "hz/live.hpp"
+#include "hz/live_virtual.hpp"
+#include "hz/microphone_permission.hpp"
 
 #include <AudioToolbox/AudioUnit.h>
 #include <CoreAudio/CoreAudio.h>
@@ -473,9 +475,10 @@ std::vector<AudioInputDeviceInfo> enumerate_audio_input_devices() {
 bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string& message) {
    report = LiveRunReport{};
    message.clear();
-   if (options.input_uid.empty() || options.midi_index < 0
+   if (options.input_uid.empty()
+      || (options.virtual_output == (options.midi_index >= 0))
       || !std::isfinite(options.seconds) || options.seconds <= 0.0 || options.seconds > 3600.0) {
-      message = "live run requires an input UID, non-negative MIDI index, and duration in (0, 3600]";
+      message = "live run requires an input UID, exactly one output selector, and duration in (0, 3600]";
       return false;
    }
 
@@ -512,8 +515,14 @@ bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string&
          return candidate.uid == options.input_uid;
       });
       if (input == inputs.end()) throw std::runtime_error("selected audio input UID was not found");
-      if (options.midi_index >= static_cast<int>(MIDIGetNumberOfDestinations())) {
+      if (!options.virtual_output
+         && options.midi_index >= static_cast<int>(MIDIGetNumberOfDestinations())) {
          throw std::runtime_error("selected MIDI destination index is out of range");
+      }
+      std::string permission_error;
+      if (!ensure_microphone_permission(std::chrono::seconds(30), permission_error)) {
+         message = permission_error;
+         return false;
       }
 
       auto const range_address = audio_address(
@@ -524,7 +533,8 @@ bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string&
       CaptureConfig capture_config;
       capture_config.sample_rate = input->sample_rate;
       capture_config.channels = input->input_channels;
-      capture_config.maximum_frames = static_cast<int>(std::ceil(frame_range.mMaximum));
+      capture_config.maximum_frames = capture_maximum_frames_for_range(
+         frame_range.mMinimum, frame_range.mMaximum);
       if (char const* error = capture_config_error(capture_config)) {
          throw std::runtime_error(error);
       }
@@ -595,8 +605,22 @@ bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string&
       Config converter_config;
       converter_config.sps = 48000.0f;
       Converter converter(input->input_channels, converter_config);
-      CoreMidiOutput output(options.midi_index);
-      output.send(make_mpe_setup_events(input->input_channels, converter_config.bend_semitones));
+      std::unique_ptr<CoreMidiOutput> indexed_output;
+      std::unique_ptr<VirtualMidiOutput> virtual_output;
+      if (options.virtual_output) {
+         virtual_output = std::make_unique<VirtualMidiOutput>();
+      } else {
+         indexed_output = std::make_unique<CoreMidiOutput>(options.midi_index);
+      }
+      std::uint64_t transmitted_words = 0;
+      auto transmit = [&](std::vector<MidiEvent> const& events) {
+         if (options.virtual_output) virtual_output->send(events);
+         else indexed_output->send(events);
+         transmitted_words += events.size();
+      };
+      auto const mpe_setup = make_mpe_setup_events(
+         input->input_channels, converter_config.bend_semitones);
+      transmit(mpe_setup);
 
       mach_timebase_info_data_t timebase{};
       if (mach_timebase_info(&timebase) != KERN_SUCCESS || timebase.denom == 0) {
@@ -623,7 +647,7 @@ bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string&
                      static_cast<int>(block->frames), false);
                   report.converter_total_ms += std::chrono::duration<double, std::milli>(
                      Clock::now() - converter_started).count();
-                  output.send(events);
+                  transmit(events);
                   auto const sent_host_time = AudioGetCurrentHostTime();
                   if (sent_host_time >= block->capture_host_time) {
                      long double const ticks = sent_host_time - block->capture_host_time;
@@ -647,7 +671,7 @@ bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string&
             auto final_events = converter.feed(nullptr, 0, 0, true);
             report.converter_total_ms += std::chrono::duration<double, std::milli>(
                Clock::now() - final_started).count();
-            output.send(final_events);
+            transmit(final_events);
          } catch (std::exception const& error) {
             worker_fatal(*state, std::string("live final note-off flush failed: ") + error.what());
          }
@@ -676,8 +700,36 @@ bool run_live(LiveRunOptions const& options, LiveRunReport& report, std::string&
          message = !worker_error.empty() ? worker_error : callback_error_message(*state);
          return false;
       }
+      if (options.virtual_output) {
+         auto const delivery = virtual_output->wait_for_delivery(
+            static_cast<std::size_t>(transmitted_words), std::chrono::seconds(2));
+         report.virtual_words = delivery.words.size();
+         report.virtual_note_ons = delivery.note_ons;
+         report.virtual_note_offs = delivery.note_offs;
+         std::vector<std::uint32_t> expected_setup;
+         for (auto const& event : mpe_setup) {
+            expected_setup.push_back(midi1_channel_voice_ump(event));
+         }
+         bool const setup_prefix = delivery.words.size() >= expected_setup.size()
+            && std::equal(expected_setup.begin(), expected_setup.end(), delivery.words.begin());
+         report.virtual_setup_verified = setup_prefix;
+         if (delivery.words.size() != transmitted_words) {
+            std::ostringstream error;
+            error << "virtual delivery word count mismatch: delivered " << delivery.words.size()
+                  << " of " << transmitted_words << " expected words";
+            message = error.str();
+            return false;
+         }
+         if (!setup_prefix) {
+            message = "virtual delivery did not preserve the shared MPE setup prefix";
+            return false;
+         }
+      }
       std::ostringstream success;
       success << "live run complete: bounded duration elapsed; worker drained and final note-offs sent";
+      if (options.virtual_output) {
+         success << "; virtual setup prefix and " << transmitted_words << " words verified";
+      }
       message = success.str();
       return true;
    } catch (std::exception const& error) {

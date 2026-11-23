@@ -25,6 +25,15 @@ struct CaptureConfig {
    int maximum_frames = capture_max_frames;
 };
 
+inline int capture_maximum_frames_for_range(double minimum, double maximum) noexcept {
+   if (!std::isfinite(minimum) || !std::isfinite(maximum)
+      || minimum < 1.0 || maximum < minimum
+      || minimum > 512.0 || maximum < 512.0) {
+      return 0;
+   }
+   return capture_max_frames;
+}
+
 inline char const* capture_config_error(CaptureConfig const& config) noexcept {
    if (config.sample_rate != 48000.0) return "capture sample rate must be exactly 48000 Hz";
    if (config.channels < 1 || config.channels > capture_max_channels) {
@@ -42,28 +51,36 @@ struct LiveRunOptions {
    std::string input_uid;
    int midi_index = -1;
    double seconds = 0.0;
+   bool virtual_output = false;
 };
 
 inline bool parse_live_run_arguments(
    std::vector<std::string> const& arguments, LiveRunOptions& options, std::string& error
 ) {
-   if (arguments.size() != 7 || arguments[0] != "--run"
-      || arguments[1] != "--input" || arguments[3] != "--midi-index"
-      || arguments[5] != "--seconds" || arguments[2].empty()) {
-      error = "live mode requires --run --input UID --midi-index N --seconds 5";
+   bool const common = arguments.size() >= 4 && arguments[0] == "--run"
+      && arguments[1] == "--input" && !arguments[2].empty();
+   bool const indexed = arguments.size() == 7 && arguments[3] == "--midi-index"
+      && arguments[5] == "--seconds";
+   bool const virtual_output = arguments.size() == 6 && arguments[3] == "--virtual-out"
+      && arguments[4] == "--seconds";
+   if (!common || (!indexed && !virtual_output)) {
+      error = "live mode requires exactly one output: --midi-index N or --virtual-out";
       return false;
    }
    LiveRunOptions parsed;
    parsed.input_uid = arguments[2];
-   auto const& midi_text = arguments[4];
-   auto const midi_result = std::from_chars(
-      midi_text.data(), midi_text.data() + midi_text.size(), parsed.midi_index);
-   if (midi_text.empty() || midi_result.ec != std::errc{}
-      || midi_result.ptr != midi_text.data() + midi_text.size() || parsed.midi_index < 0) {
-      error = "MIDI destination index must be a non-negative integer";
-      return false;
+   parsed.virtual_output = virtual_output;
+   if (indexed) {
+      auto const& midi_text = arguments[4];
+      auto const midi_result = std::from_chars(
+         midi_text.data(), midi_text.data() + midi_text.size(), parsed.midi_index);
+      if (midi_text.empty() || midi_result.ec != std::errc{}
+         || midi_result.ptr != midi_text.data() + midi_text.size() || parsed.midi_index < 0) {
+         error = "MIDI destination index must be a non-negative integer";
+         return false;
+      }
    }
-   std::string const& seconds_text = arguments[6];
+   std::string const& seconds_text = arguments[virtual_output ? 5 : 6];
    char* end = nullptr;
    errno = 0;
    parsed.seconds = std::strtod(seconds_text.c_str(), &end);

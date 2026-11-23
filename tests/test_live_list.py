@@ -24,6 +24,9 @@ for arguments in (
     ["--run", "--input", "UID", "--midi-index", "0", "--seconds", "3601"],
     ["--run", "--input", "UID", "--midi-index", "0", "--seconds", "nan"],
     ["--run", "--midi-index", "0", "--input", "UID", "--seconds", "5"],
+    ["--run", "--input", "UID", "--midi-index", "0", "--virtual-out", "--seconds", "5"],
+    ["--run", "--input", "UID", "--virtual-out", "--midi-index", "0", "--seconds", "5"],
+    ["--run", "--input", "UID", "--virtual-out"],
 ):
     rejected = subprocess.run(
         [binary, *arguments], text=True, capture_output=True, timeout=10)

@@ -226,6 +226,21 @@ bool capture_timeline_rejects_missing_and_invalid_timestamps() {
    return ok;
 }
 
+bool capture_range_is_capped_to_preallocated_blocks() {
+   bool ok = check(hz::capture_maximum_frames_for_range(15.0, 4096.0) == 1024,
+      "a built-in-style 15..4096 device range was not capped to 1024 frames");
+   ok = check(hz::capture_maximum_frames_for_range(512.0, 512.0) == 1024,
+      "a fixed 512-frame device range was rejected") && ok;
+   ok = check(hz::capture_maximum_frames_for_range(513.0, 4096.0) == 0,
+      "a device that cannot provide 512-frame blocks was accepted") && ok;
+   ok = check(hz::capture_maximum_frames_for_range(1.0, 511.0) == 0,
+      "a device range below 512 frames was accepted") && ok;
+   ok = check(hz::capture_maximum_frames_for_range(
+      std::numeric_limits<double>::quiet_NaN(), 4096.0) == 0,
+      "a non-finite device range was accepted") && ok;
+   return ok;
+}
+
 bool live_run_arguments_are_explicit_and_bounded() {
    hz::LiveRunOptions options;
    std::string error;
@@ -233,8 +248,14 @@ bool live_run_arguments_are_explicit_and_bounded() {
       {"--run", "--input", "BuiltInMicrophoneDevice", "--midi-index", "2", "--seconds", "5"},
       options, error), "explicit valid live-run arguments were rejected: " + error);
    ok = check(options.input_uid == "BuiltInMicrophoneDevice"
-      && options.midi_index == 2 && options.seconds == 5.0,
+      && options.midi_index == 2 && options.seconds == 5.0 && !options.virtual_output,
       "live-run arguments were parsed incorrectly") && ok;
+   ok = check(hz::parse_live_run_arguments(
+      {"--run", "--input", "BuiltInMicrophoneDevice", "--virtual-out", "--seconds", "5"},
+      options, error), "explicit virtual live-run arguments were rejected: " + error);
+   ok = check(options.input_uid == "BuiltInMicrophoneDevice"
+      && options.midi_index == -1 && options.seconds == 5.0 && options.virtual_output,
+      "virtual output selector was parsed incorrectly") && ok;
    std::vector<std::vector<std::string>> const invalid{
       {}, {"--run"}, {"--run", "--input", "UID", "--midi-index", "0"},
       {"--run", "--input", "", "--midi-index", "0", "--seconds", "5"},
@@ -243,7 +264,11 @@ bool live_run_arguments_are_explicit_and_bounded() {
       {"--run", "--input", "UID", "--midi-index", "0", "--seconds", "3601"},
       {"--run", "--input", "UID", "--midi-index", "0", "--seconds", "nan"},
       {"--run", "--input", "UID", "--midi-index", "zero", "--seconds", "5"},
-      {"--run", "--midi-index", "0", "--input", "UID", "--seconds", "5"}
+      {"--run", "--midi-index", "0", "--input", "UID", "--seconds", "5"},
+      {"--run", "--input", "UID", "--midi-index", "0", "--virtual-out", "--seconds", "5"},
+      {"--run", "--input", "UID", "--virtual-out", "--midi-index", "0", "--seconds", "5"},
+      {"--run", "--input", "UID", "--virtual-out", "--virtual-out", "--seconds", "5"},
+      {"--run", "--input", "UID", "--virtual-out", "--seconds", "0"}
    };
    for (auto const& arguments : invalid) {
       ok = check(!hz::parse_live_run_arguments(arguments, options, error),
@@ -265,6 +290,7 @@ int main() {
    failures += !capture_timeline_maps_epoch_and_variable_blocks();
    failures += !capture_timeline_rejects_device_gap_before_publication();
    failures += !capture_timeline_rejects_missing_and_invalid_timestamps();
+   failures += !capture_range_is_capped_to_preallocated_blocks();
    failures += !live_run_arguments_are_explicit_and_bounded();
    if (failures == 0) std::cout << "all live unit tests passed\n";
    return failures == 0 ? 0 : 1;

@@ -13,7 +13,8 @@ void usage() {
       << "  hz_live --list\n"
       << "  hz_live --self-test\n"
       << "  hz_live --sine-test\n"
-      << "  hz_live --run --input UID --midi-index N --seconds 5\n";
+      << "  hz_live --run --input UID --midi-index N --seconds 5\n"
+      << "  hz_live --run --input UID --virtual-out --seconds 5\n";
 }
 
 } // namespace
@@ -78,6 +79,12 @@ int main(int argc, char** argv) {
          << "diagnostic capture-buffer-to-MIDI-send-max="
          << report.max_capture_to_send_ms
          << " ms (not acoustic onset latency)\n";
+      if (options.virtual_output) {
+         std::cout << "virtual: words=" << report.virtual_words
+            << " note-ons=" << report.virtual_note_ons
+            << " note-offs=" << report.virtual_note_offs
+            << " setup-prefix=" << (report.virtual_setup_verified ? "verified" : "failed") << '\n';
+      }
       return passed ? 0 : 1;
    }
    usage();

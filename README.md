@@ -29,7 +29,7 @@ make q-demo Q_PATH=../Q
 
 ## Native live-I/O slice
 
-On macOS, `make live-test` builds the C++20/CoreMIDI/CoreAudio slice and runs software-only integration tests. It links AudioToolbox, CoreAudio, CoreMIDI, and CoreFoundation; Q is not required.
+On macOS, `make live-test` builds the C++20/CoreMIDI/CoreAudio slice and runs software-only integration tests. It links AudioToolbox, CoreAudio, CoreMIDI, CoreFoundation, AVFoundation, and Foundation; Q is not required. It also builds and ad-hoc signs `build/HzLive.app` without requesting microphone access.
 
 ```sh
 ./build/hz_live --list
@@ -37,11 +37,20 @@ On macOS, `make live-test` builds the C++20/CoreMIDI/CoreAudio slice and runs so
 ./build/hz_live --sine-test
 # Only after selecting an input and destination from --list:
 ./build/hz_live --run --input UID --midi-index N --seconds 5
+# Software-only MIDI alternative (no external endpoint):
+./build/hz_live --run --input UID --virtual-out --seconds 5
+# Build the identifiable, ad-hoc-signed app used for microphone authorization:
+make app
+./build/HzLive.app/Contents/MacOS/HzLive --run --input BuiltInMicrophoneDevice --virtual-out --seconds 5
 ```
 
 `--list` reads device properties only: CoreAudio input UID/name/rate/channel count/default marker and CoreMIDI destination index/name/unique ID. It does not create an audio unit or open the microphone. The self-test and sine-test send only to a temporary software virtual destination, never an external MIDI destination. They verify exact MPE setup and note UMP words; virtual send-to-receive latency is diagnostic, not a timing pass/fail gate. `make live-test` never executes `--run`.
 
-Live mode is opt-in and requires an exact input UID, an external MIDI destination index, and a finite duration in `(0, 3600]` seconds. It requests a 512-frame device buffer, accepts only 48 kHz and 1–8 input channels, and rejects devices whose reported variable block range can exceed 1024 frames. AUHAL renders float32 packed noninterleaved audio into a fixed 16-slot SPSC ring; a worker performs conversion and sends UMP with CoreMIDI timestamp 0. Overflow, render errors, oversized blocks, and sample discontinuities are fatal. Shutdown stops capture, drains the worker, sends final note-offs, and joins before disposing the unit.
+Live mode is opt-in and requires an exact input UID, exactly one output selector (`--midi-index N` or `--virtual-out`), and a finite duration in `(0, 3600]` seconds. It requests a 512-frame device buffer, accepts only 48 kHz and 1–8 input channels, and caps AUHAL `MaximumFramesPerSlice` at the preallocated 1024-frame storage bound when the device range can supply 512 frames. AUHAL renders float32 packed noninterleaved audio into a fixed 16-slot SPSC ring; a worker performs conversion and sends UMP with CoreMIDI timestamp 0. Overflow, render errors, oversized blocks, and sample discontinuities are fatal. Shutdown stops capture, drains the worker, sends final note-offs, and joins before disposing the unit.
+
+Before any buffer or AUHAL setup, `run_live` uses AVFoundation to check/request audio capture authorization and waits at most 30 seconds while servicing the run loop. Denied, restricted, missing-metadata, and timeout outcomes return actionable errors instead of entering CoreAudio. First authorization should use the bundled `HzLive.app` binary, which supplies `com.clofton.hzlive` and a truthful `NSMicrophoneUsageDescription`: conversion is bounded, audio stays in memory, and audio is not recorded or saved. The app is ad-hoc signed. Listing and the self/sine/virtual tests never request microphone permission, and no TCC database state is modified directly.
+
+`--virtual-out` creates a private protocol-1 virtual destination, never an external endpoint. Its cumulative UMP history persists across asynchronous sends. After worker drain, live mode waits up to two seconds for the full expected word count, verifies the shared MPE setup prefix, and reports virtual words/note-ons/note-offs. `make live-test` exercises this delivery path without opening an audio input.
 
 The run report includes actual device buffer size/rate, queue high-water and failures, converter time, and maximum capture-buffer-to-MIDI-send time. The latter is a pipeline diagnostic, **not acoustic onset latency**; hardware streaming and end-to-end acoustic latency still require a user-selected microphone and MIDI destination to verify.
 
